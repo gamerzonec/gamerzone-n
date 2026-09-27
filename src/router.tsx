@@ -6,9 +6,8 @@ import { normalizeHashUrl } from "./lib/normalize-hash";
 
 // Se ejecuta al importar este módulo, antes de que se cree el historial hash.
 // Es importante que sea aquí y no antes de hydrateRoot: cuando el historial se
-// construye ya lee `location.hash`, así que la URL debe estar saneada primero.
-// (El plugin de TanStack inyecta `basepath` al hidratar y duplica el prefijo
-// del proyecto dentro del hash.)
+// construye ya lee `location.hash`, y con el sitio en la raíz del dominio no hay
+// pathname de subdirectorio que saneear (ver src/lib/normalize-hash.ts).
 normalizeHashUrl();
 
 export const getRouter = () => {
@@ -27,11 +26,9 @@ export const getRouter = () => {
     scrollRestoration: true,
     defaultPreloadStaleTime: 0,
     // OJO: no definir `basepath` aquí. El plugin de TanStack lo deriva del
-    // `base` de Vite (/gamerzone-n/) porque el prerender del SPA shell lo
-    // necesita, y al hidratar lo vuelve a inyectar
-    // (start-client-core → hydrateStart.js).
-    // Con historial hash ese valor se antepone también al hash, así que el
-    // prefijo se corrige en normalizeHashUrl(), llamado arriba.
+    // `base` de Vite, que ahora es "/" (el sitio vive en la raíz del dominio
+    // https://gamerzonec.github.io), así que el router no añade ni recorta
+    // ningún prefijo de la URL.
   });
 
   return router;

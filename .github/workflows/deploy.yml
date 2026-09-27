@@ -50,12 +50,9 @@ jobs:
           cd dist/publish
           # Red de seguridad: si el build no generó index.html, usamos el shell.
           if [ ! -f index.html ]; then cp _shell.html index.html; fi
-          # GitHub Pages sirve 404.html en rutas desconocidas; así el SPA
-          # arranca igual cuando alguien entra por un enlace directo.
-          cp index.html 404.html
           # Evita que Jekyll ignore carpetas que empiezan con guion bajo.
           touch .nojekyll
-          echo "Contenido que se publicará:"
+          echo "Contenido que se publicará en la raíz del sitio:"
           ls -la
 
       - name: Deploy to GitHub Pages
@@ -67,3 +64,8 @@ jobs:
           keep_files: false
           force_orphan: true
           enable_jekyll: false
+          cname: gamerzonec.github.io
+          # `cname` escribe el archivo CNAME en la raíz de gh-pages. Es
+          # obligatorio cuando el repo se llama usuario.github.io: Pages lo usa
+          # para fijar el dominio del sitio, y con `force_orphan` (que recrea la
+          # rama en cada deploy) hay que volver a crearlo cada vez.

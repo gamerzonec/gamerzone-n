@@ -1,42 +1,52 @@
 /**
- * GitHub Pages sirve la app desde un subdirectorio (/gamerzone-n/), y el plugin
- * de TanStack inyecta `basepath: "gamerzone-n"` en el router al hidratar
- * (start-client-core → hydrateStart.js). Con historial hash ese basepath se
- * antepone también al hash, y la URL queda duplicada:
+ * La app se publica en la raíz del dominio de GitHub Pages:
  *
- *   https://celsogit.github.io/gamerzone-n/#/gamerzone-n/plataforma/PS2
+ *   https://gamerzonec.github.io
  *
- * Como el historial hash solo lee lo que va después del `#`, el prefijo del
- * proyecto no hace falta ahí. Esta función lo corrige y se llama desde
- * src/client.tsx, antes de montar la app, para que el router arranque con la
- * ruta ya limpia:
+ * Antes vivía en un subdirectorio (/gamerzone-n/) y el plugin de TanStack
+ * inyectaba ese prefijo como `basepath` del router, que con historial hash
+ * duplicaba la ruta dentro del hash:
  *
- *   https://celsogit.github.io/gamerzone-n/#/plataforma/PS2
+ *   …/#/gamerzone-n/plataforma/PS2
+ *
+ * Con `base: "/"` en vite.config.ts el router deriva un basepath vacío, así que
+ * ya no hay prefijo que quitar de la URL.
+ *
+ * Lo que sí hay que corregir es OTRO prefijo del mismo origen: al no haber
+ * basepath, el router tampoco crea un rewrite de entrada, y el rewrite es lo
+ * único que normaliza el `pathname` de la location. El historial hash, en
+ * cambio, sí arrastra el pathname real del navegador:
+ *
+ *   createHashHistory → parseLocation()
+ *     pathPart = location.hash.split("#")[1]   // "/plataforma/PS2"
+ *     parseHref(`${pathPart}${location.search}${…}`)
+ *
+ * Por eso, si el sitio vive en un subdirectorio, el pathname del navegador se
+ * cuela en la location del router y todo se rompe:
+ *
+ *   https://cuenta.github.io/mi-repo/#/plataforma/PS2
+ *   → location del router: "/mi-repo/?/plataforma/PS2"  → no matchea ninguna ruta
+ *
+ *   https://cuenta.github.io/mi-repo/#/
+ *   → location del router: "/mi-repo/" → 404 en la ruta raíz
+ *
+ * La corrección más simple y sin estados intermedios es publicar el sitio en la
+ * RAÍZ del dominio (https://gamerzonec.github.io). Aun así se deja aquí el
+ * saneo: si algún día el pathname del navegador no es el de la app (subdirectorio
+ * nuevo, GitHub Pages sirviendo la app desde otra ruta), se reescribe la URL a la
+ * raíz antes de montar el router.
  */
-
-const PUBLIC_BASE_SEGMENT = "gamerzone-n";
-
 export function normalizeHashUrl(): void {
   if (typeof window === "undefined") return;
 
   const { location, history } = window;
 
-  // Solo aplica cuando la app cuelga de un subdirectorio.
-  if (!location.pathname.includes(PUBLIC_BASE_SEGMENT)) return;
+  // En la raíz del dominio el pathname ya es "/" y no hay nada que hacer.
+  if (location.pathname === "/") return;
 
-  const rawHash = location.hash;
-  if (rawHash.length < 2) return;
-
-  // Solo tocamos los hashes que empiezan por barra de ruta ("#/...").
-  const hashPath = rawHash.slice(1);
-  if (!hashPath.startsWith("/")) return;
-
-  const duplicated = `/${PUBLIC_BASE_SEGMENT}`;
-  if (!hashPath.startsWith(duplicated)) return;
-
-  const rest = hashPath.slice(duplicated.length);
-  const cleaned = rest.startsWith("/") ? rest : `/${rest}`;
+  // El hash debe empezar por barra de ruta ("#/…") para ser una ruta de la app.
+  if (!location.hash.startsWith("#/")) return;
 
   // replaceState no recarga la página ni deja una entrada extra en el historial.
-  history.replaceState(history.state, "", `${location.pathname}${location.search}#${cleaned}`);
+  history.replaceState(history.state, "", `/${location.search}${location.hash}`);
 }
