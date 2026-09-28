@@ -130,14 +130,20 @@ async function loadCatalog(): Promise<Catalog> {
   const rows = await Promise.all(
     TABLES.map(async ({ table }) => {
       const isNews = table === "BANNER";
-      const { data, error } = await supabase
-        .from(table)
-        .select(
-          isNews
-            ? 'id, "Texto 1", "Texto 2", "Texto 3", url, created_at'
-            : "id, Nombre, url, Descripción, Tráiler, created_at",
-        );
+      // La tabla BANNER no tiene columna de fecha: pedirla hace fallar la
+      // consulta entera ("column BANNER.created_at does not exist"). Sus filas
+      // se marcan con `hasDate: false` y se ordenan al final. Si le pasa a otra
+      // tabla, se reintenta sin `created_at` en vez de tirar el catálogo entero.
+      const columns = isNews
+        ? 'id, "Texto 1", "Texto 2", "Texto 3", url'
+        : "id, Nombre, url, Descripción, Tráiler, created_at";
 
+      let result = await supabase.from(table).select(columns);
+      if (result.error && /created_at/i.test(result.error.message)) {
+        result = await supabase.from(table).select(columns.replace(", created_at", ""));
+      }
+
+      const { data, error } = result;
       if (error) {
         console.error(`Supabase request failed [${table}]: ${error.message}`);
         throw new Error(`No se pudo leer la tabla ${table}: ${error.message}`);
