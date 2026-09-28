@@ -22,7 +22,19 @@ export type Game = {
   heading: string | null;
   description: string | null;
   trailer: string | null;
+  /** Fecha de creación si la tabla tiene columna de fecha; si no, la del build. */
   createdTime: string;
+  /** true cuando `createdTime` es una fecha real y no el relleno del build. */
+  hasDate: boolean;
+  /**
+   * `id` numérico tal cual está en Supabase.
+   *
+   * El `id` es incremental: cada fila nueva que se sube a una tabla tiene un id
+   * mayor que las anteriores. Sirve para desempatar cuando varias filas comparten
+   * la misma `created_at` (se subieron en la misma tanda). Si el id no es
+   * numérico se usa 0 y el desempate cae en el nombre.
+   */
+  numericId: number;
 };
 
 export type Catalog = {
@@ -68,6 +80,23 @@ const CATALOG_TTL_MS = 5 * 60_000;
 let catalogCache: { data: Catalog; expiresAt: number } | null = null;
 let catalogInFlight: Promise<Catalog> | null = null;
 
+/**
+ * Clave con la que se guarda cada vista en la tabla `views`.
+ *
+ * Es `NOMBRE_PLATAFORMA` (por ejemplo "Resident Evil 4:PS2"). Se elige el
+ * nombre y no el `id` por una razón práctica: el `id` cambia si borras y vuelves
+ * a subir un juego, y con él se perdería todo el contador acumulado. El nombre
+ * del juego, en cambio, es estable.
+ *
+ * Se añade la plataforma para separar las distintas versiones del mismo título:
+ * "Resident Evil 4" está en PS2, PS3 y PS4, y son entradas distintas del
+ * catálogo. Sin el sufijo, los ~510 juegos multiplataforma sumarían sus vistas
+ * en un solo contador y "Más vistos" mostraría la misma carátula repetida.
+ */
+export function viewKey(game: Pick<Game, "name" | "platform">): string {
+  return `${game.name.trim()}:${game.platform}`;
+}
+
 /** Catálogo completo: plataformas + juegos (con caché en memoria). */
 export async function getCatalog(): Promise<Catalog> {
   const now = Date.now();
@@ -105,8 +134,8 @@ async function loadCatalog(): Promise<Catalog> {
         .from(table)
         .select(
           isNews
-            ? 'id, "Texto 1", "Texto 2", "Texto 3", url'
-            : "id, Nombre, url, Descripción, Tráiler",
+            ? 'id, "Texto 1", "Texto 2", "Texto 3", url, created_at'
+            : "id, Nombre, url, Descripción, Tráiler, created_at",
         );
 
       if (error) {
@@ -129,11 +158,16 @@ async function loadCatalog(): Promise<Catalog> {
         : (record["Nombre"] as string | null);
       if (!name?.trim()) continue;
 
-      const createdTime = (record["created_at"] as string | null) ?? new Date().toISOString();
+      const rawCreated =
+        (record["created_at"] as string | null) ?? (record["createdTime"] as string | null) ?? null;
+
+      const createdTime = rawCreated ?? new Date().toISOString();
       const trailerUrl = (record["Tráiler"] as string | null)?.trim() ?? null;
+      const numericId = Number(record["id"]);
 
       games.push({
         id: String(record["id"]),
+        numericId: Number.isFinite(numericId) ? numericId : 0,
         name: name.trim(),
         platform,
         cover: isNews ? null : ((record["url"] as string | null) ?? null),
@@ -145,6 +179,9 @@ async function loadCatalog(): Promise<Catalog> {
         // En la columna "Tráiler" se puede pegar la URL de YouTube o el ID suelto.
         trailer: youtubeIdFromUrl(trailerUrl ?? "") ?? trailerUrl,
         createdTime,
+        // Sin columna de fecha en Supabase no hay forma de saber qué es nuevo:
+        // `createdTime` sería la hora del build y mentiría en cada deploy.
+        hasDate: Boolean(rawCreated),
       });
     }
   }
@@ -174,7 +211,7 @@ export async function getGameDetails(name: string): Promise<GameDetails> {
   }
 }
 
-/** Ranking global de vistas: { gameId: count }. */
+/** Ranking global de vistas: { "NOMBRE:PLATAFORMA": count }. */
 export async function getGlobalViews(): Promise<Record<string, number>> {
   try {
     const { data, error } = await supabase.from("views").select("game_id, count");
@@ -193,24 +230,34 @@ export async function getGlobalViews(): Promise<Record<string, number>> {
   }
 }
 
-/** Registra una vista. Necesita permiso de INSERT en la tabla `views`. */
-export async function trackGlobalView(gameId: string): Promise<void> {
-  const id = String(gameId ?? "")
+/**
+ * Registra una vista (contador global compartido por todos los usuarios).
+ *
+ * Usa la función atómica `increment_view`, que hace el UPDATE ... SET count =
+ * count + 1 dentro de la base de datos. Es imprescindible: el upsert anterior
+ * escribía `count: 1` siempre, así que con la RPC ausente cada vista BORRABA el
+ * contador en vez de sumar (por eso todas las filas tenían count = 1).
+ *
+ * Requiere ejecutar supabase-views-setup.sql una vez en Supabase.
+ */
+export async function trackGlobalView(viewId: string): Promise<boolean> {
+  const id = String(viewId ?? "")
     .trim()
     .slice(0, 300);
-  if (!id) return;
+  if (!id) return false;
 
   try {
-    // Función RPC atómica (evita perder incrementos cuando hay varios usuarios
-    // a la vez). Si todavía no existe en Supabase, caemos al upsert.
     const { error } = await supabase.rpc("increment_view", { p_game_id: id });
-    if (!error) return;
-
-    const { error: upsertError } = await supabase
-      .from("views")
-      .upsert({ game_id: id, count: 1, updated_at: new Date().toISOString() });
-    if (upsertError) console.warn("[views] No se pudo guardar la vista:", upsertError.message);
+    if (error) {
+      console.warn(
+        "[views] No se pudo incrementar el contador (¿ejecutaste supabase-views-setup.sql?):",
+        error.message,
+      );
+      return false;
+    }
+    return true;
   } catch (error) {
     console.warn("[views] No se pudo registrar la vista:", error);
+    return false;
   }
 }

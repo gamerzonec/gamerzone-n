@@ -8,7 +8,7 @@ import { GameCarousel } from "@/components/GameCarousel";
 import { GameDetailsModal } from "@/components/GameDetailsModal";
 import { GameGrid } from "@/components/GameGrid";
 import { PlatformCard } from "@/components/PlatformCard";
-import { type Game, getGlobalViews, trackGlobalView } from "@/lib/games-data";
+import { type Game, getGlobalViews, trackGlobalView, viewKey } from "@/lib/games-data";
 import { catalogQueryOptions } from "@/lib/games-query";
 import { recentlyAdded } from "@/lib/games";
 
@@ -54,8 +54,10 @@ function CatalogPage() {
 
   const queryClient = useQueryClient();
 
-  // Ranking global de vistas (sincronizado cada 5s y al cambiar de pestaña)
-  const { data: views = {}, refetch: refetchViews } = useQuery({
+  // Ranking global de vistas (sincronizado cada 5s y al cambiar de pestaña).
+  // Las claves son "NOMBRE:PLATAFORMA" (ver viewKey): el nombre es estable
+  // aunque cambie el id, y la plataforma separa las distintas versiones.
+  const { data: views = {}, isSuccess: viewsLoaded } = useQuery({
     queryKey: ["global-views"],
     queryFn: () => getGlobalViews(),
     staleTime: 3000,
@@ -63,21 +65,33 @@ function CatalogPage() {
     refetchOnWindowFocus: true,
   });
 
-  // Registra la vista tanto en servidor como instantáneamente en la interfaz (optimista)
+  // Registra la vista tanto en la interfaz (optimista) como en Supabase.
+  //
+  // 1. Se ignora mientras el ranking aún no ha llegado: pintar un +1 sobre una
+  //    lista vacía reordenaba el carrusel con ceros y desaparecía al llegar los
+  //    datos reales.
+  // 2. Si Supabase rechaza el incremento (p. ej. falta ejecutar el SQL de
+  //    `increment_view`) se deshace el +1 en pantalla, para que nadie vea un
+  //    contador que no es real.
   const recordView = useCallback(
     (game: Game) => {
-      // 1. Actualización inmediata en pantalla
+      const key = viewKey(game);
+      if (!viewsLoaded) return;
+
       queryClient.setQueryData<Record<string, number>>(["global-views"], (old = {}) => ({
         ...old,
-        [game.id]: (old[game.id] ?? 0) + 1,
+        [key]: (old[key] ?? 0) + 1,
       }));
 
-      // 2. Persistir en Supabase
-      trackGlobalView(game.id)
-        .then(() => refetchViews())
-        .catch((error) => console.error("No se pudo registrar la vista", error));
+      void trackGlobalView(key).then((ok) => {
+        if (ok) return;
+        queryClient.setQueryData<Record<string, number>>(["global-views"], (old = {}) => ({
+          ...old,
+          [key]: Math.max(0, (old[key] ?? 1) - 1),
+        }));
+      });
     },
-    [queryClient, refetchViews],
+    [queryClient, viewsLoaded],
   );
 
   const openDetail = useCallback(
@@ -101,7 +115,7 @@ function CatalogPage() {
   const popular = useMemo(() => {
     return [...catalogGames]
       .sort((a, b) => {
-        const diff = (views[b.id] ?? 0) - (views[a.id] ?? 0);
+        const diff = (views[viewKey(b)] ?? 0) - (views[viewKey(a)] ?? 0);
         if (diff !== 0) return diff;
         return a.name.localeCompare(b.name, "es");
       })

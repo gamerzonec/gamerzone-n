@@ -20,10 +20,28 @@ export function youtubeSearchUrl(name: string, platform?: string | null): string
   )}`;
 }
 
+/**
+ * "Recién añadidos": lo último subido a Supabase, de más nuevo a más viejo.
+ *
+ * El orden es una sola lista global (no por plataforma): compara la fecha de
+ * creación y, cuando dos empates, el `id` numérico descendente. Ese desempate es
+ * imprescindible porque `created_at` se guarda POR TANDAS: al importar un lote
+ * de juegos, todos comparten la misma marca de tiempo al microsegundo (los 95 de
+ * 3DS tienen `2026-09-27T06:20:45.440429`). Sin desempatar por id, el orden caía
+ * en el alfabético y el carrusel mostraba "7th Dragon III, Animal Crossing,
+ * Asphalt 3D" en vez de lo último que se subió.
+ *
+ * Los juegos sin fecha (p. ej. la tabla BANNER, que no tiene `created_at`) van al
+ * final para no mezclarse con los que sí la tienen.
+ */
 export function recentlyAdded(games: Game[], limit = 18): Game[] {
   return [...games]
     .sort(
-      (a, b) => b.createdTime.localeCompare(a.createdTime) || a.name.localeCompare(b.name, "es"),
+      (a, b) =>
+        Number(b.hasDate) - Number(a.hasDate) ||
+        b.createdTime.localeCompare(a.createdTime) ||
+        b.numericId - a.numericId ||
+        a.name.localeCompare(b.name, "es"),
     )
     .slice(0, limit);
 }

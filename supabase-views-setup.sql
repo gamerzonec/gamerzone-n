@@ -4,8 +4,14 @@
 -- escribe directamente en Supabase. Pega este script en
 -- Supabase → SQL Editor → New query → Run.
 --
--- Sin esto, la app sigue funcionando: cae al upsert y guarda la vista con
--- count = 1 (se ve raro en consola un 404 de `increment_view`, pero no rompe).
+-- IMPORTANTE: este script NO es opcional. Si la función `increment_view` no
+-- existe, el contador no sube (la app avisa en consola y en el ranking, que se
+-- queda como está).
+--
+-- En `game_id` se guarda la clave "PLATAFORMA:id" (por ejemplo "3DS:4"). El `id`
+-- de Supabase solo es único dentro de cada tabla: la fila 4 de 3DS y la 4 de WII
+-- son juegos distintos, así que sin el prefijo de plataforma se pisarían entre
+-- ellos y "Más vistos" mezclaría juegos de distintas consolas.
 
 -- 1) Función atómica para sumar una vista (evita perder incrementos cuando
 --    varios usuarios abren el mismo juego a la vez).
@@ -52,3 +58,8 @@ grant select, insert, update on public.views to anon, authenticated;
 --    "on conflict" funcione. Si al ejecutar da error porque ya existe, ignóralo.
 alter table public.views
   add constraint views_game_id_key unique (game_id);
+
+-- 4) Limpieza de las claves viejas (formato "id" suelto, sin plataforma).
+--    Se crearon antes del arreglo y ya no las lee nadie, así que solo ensucian
+--    el ranking. Descomenta y ejecuta si quieres empezar de cero:
+-- delete from public.views where position(':' in game_id) = 0;
