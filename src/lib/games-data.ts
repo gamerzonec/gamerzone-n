@@ -120,6 +120,49 @@ export async function getCatalog(): Promise<Catalog> {
   return catalogInFlight;
 }
 
+/**
+ * Filas por petición al leer una tabla.
+ *
+ * PostgREST (el REST de Supabase) corta cada respuesta a 1000 filas: es el
+ * `max-rows` por defecto del proyecto y no avisa por ningún lado, solo devuelve
+ * menos filas de las que existen. Como aquí se pide la tabla entera sin
+ * `range()`, PS2 (1121 filas) y XBOX360 (1049) se quedaban con las primeras
+ * 1000 y 170 carátulas no llegaban nunca a la página.
+ */
+const PAGE_SIZE = 1000;
+
+/** Lee una tabla completa paginando, para no perder filas por el tope de 1000. */
+async function fetchAllRows(table: string, columns: string): Promise<Record<string, unknown>[]> {
+  const records: Record<string, unknown>[] = [];
+
+  for (let offset = 0; ; offset += PAGE_SIZE) {
+    let result = await supabase
+      .from(table)
+      .select(columns)
+      .range(offset, offset + PAGE_SIZE - 1);
+
+    // Tabla sin columna de fecha: se reintenta sin ella en vez de tirar abajo
+    // el catálogo entero (solo BANNER está en ese caso hoy).
+    if (result.error && /created_at/i.test(result.error.message)) {
+      result = await supabase
+        .from(table)
+        .select(columns.replace(", created_at", ""))
+        .range(offset, offset + PAGE_SIZE - 1);
+    }
+
+    if (result.error) {
+      console.error(`Supabase request failed [${table}]: ${result.error.message}`);
+      throw new Error(`No se pudo leer la tabla ${table}: ${result.error.message}`);
+    }
+
+    const page = (result.data as unknown as Record<string, unknown>[]) ?? [];
+    records.push(...page);
+
+    // Página incompleta: ya no queda nada por leer.
+    if (page.length < PAGE_SIZE) return records;
+  }
+}
+
 async function loadCatalog(): Promise<Catalog> {
   const platforms: string[] = [];
   for (const source of TABLES) {
@@ -138,18 +181,9 @@ async function loadCatalog(): Promise<Catalog> {
         ? 'id, "Texto 1", "Texto 2", "Texto 3", url'
         : "id, Nombre, url, Descripción, Tráiler, created_at";
 
-      let result = await supabase.from(table).select(columns);
-      if (result.error && /created_at/i.test(result.error.message)) {
-        result = await supabase.from(table).select(columns.replace(", created_at", ""));
-      }
+      const records = await fetchAllRows(table, columns);
 
-      const { data, error } = result;
-      if (error) {
-        console.error(`Supabase request failed [${table}]: ${error.message}`);
-        throw new Error(`No se pudo leer la tabla ${table}: ${error.message}`);
-      }
-
-      return { table, isNews, records: (data as unknown as Record<string, unknown>[]) ?? [] };
+      return { table, isNews, records };
     }),
   );
 
