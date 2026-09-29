@@ -1,4 +1,4 @@
-import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
+import { useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import { ArrowLeft, Gamepad2, Search } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -8,7 +8,7 @@ import { GameCarousel } from "@/components/GameCarousel";
 import { GameDetailsModal } from "@/components/GameDetailsModal";
 import { GameGrid } from "@/components/GameGrid";
 import { PlatformCard } from "@/components/PlatformCard";
-import { type Game, getGlobalViews, trackGlobalView, viewKey } from "@/lib/games-data";
+import { type Game, trackGlobalView, viewKey } from "@/lib/games-data";
 import { catalogQueryOptions } from "@/lib/games-query";
 import { recentlyAdded } from "@/lib/games";
 
@@ -52,46 +52,32 @@ function CatalogPage() {
   const [lightboxGame, setLightboxGame] = useState<Game | null>(null);
   const [query, setQuery] = useState("");
 
-  const queryClient = useQueryClient();
+  // Vistas que este usuario acaba de generar y que aún no están en el catálogo
+  // (la columna `views` de Supabase se refresca con el catálogo, cada 5 min).
+  // Solo viven en memoria: si Supabase rechaza el +1 se deshace, para que nadie
+  // vea un contador que no es real.
+  const [pendingViews, setPendingViews] = useState<Record<string, number>>({});
 
-  // Ranking global de vistas (sincronizado cada 5s y al cambiar de pestaña).
-  // Las claves son "NOMBRE:PLATAFORMA" (ver viewKey): el nombre es estable
-  // aunque cambie el id, y la plataforma separa las distintas versiones.
-  const { data: views = {}, isSuccess: viewsLoaded } = useQuery({
-    queryKey: ["global-views"],
-    queryFn: () => getGlobalViews(),
-    staleTime: 3000,
-    refetchInterval: 5000,
-    refetchOnWindowFocus: true,
-  });
+  const recordView = useCallback((game: Game) => {
+    // El banner no lleva contador: no está en la configuración de vistas.
+    if (game.platform === "NOTICIAS") return;
+    const key = viewKey(game);
 
-  // Registra la vista tanto en la interfaz (optimista) como en Supabase.
-  //
-  // 1. Se ignora mientras el ranking aún no ha llegado: pintar un +1 sobre una
-  //    lista vacía reordenaba el carrusel con ceros y desaparecía al llegar los
-  //    datos reales.
-  // 2. Si Supabase rechaza el incremento (p. ej. falta ejecutar el SQL de
-  //    `increment_view`) se deshace el +1 en pantalla, para que nadie vea un
-  //    contador que no es real.
-  const recordView = useCallback(
-    (game: Game) => {
-      const key = viewKey(game);
-      if (!viewsLoaded) return;
+    setPendingViews((old) => ({ ...old, [key]: (old[key] ?? 0) + 1 }));
 
-      queryClient.setQueryData<Record<string, number>>(["global-views"], (old = {}) => ({
-        ...old,
-        [key]: (old[key] ?? 0) + 1,
-      }));
-
-      void trackGlobalView(key).then((ok) => {
-        if (ok) return;
-        queryClient.setQueryData<Record<string, number>>(["global-views"], (old = {}) => ({
-          ...old,
-          [key]: Math.max(0, (old[key] ?? 1) - 1),
-        }));
+    void trackGlobalView(game).then((ok) => {
+      if (ok) return;
+      setPendingViews((old) => {
+        const next = { ...old, [key]: Math.max(0, (old[key] ?? 1) - 1) };
+        if (next[key] === 0) delete next[key];
+        return next;
       });
-    },
-    [queryClient, viewsLoaded],
+    });
+  }, []);
+
+  const totalViews = useCallback(
+    (game: Game) => game.views + (pendingViews[viewKey(game)] ?? 0),
+    [pendingViews],
   );
 
   const openDetail = useCallback(
@@ -115,12 +101,12 @@ function CatalogPage() {
   const popular = useMemo(() => {
     return [...catalogGames]
       .sort((a, b) => {
-        const diff = (views[viewKey(b)] ?? 0) - (views[viewKey(a)] ?? 0);
+        const diff = totalViews(b) - totalViews(a);
         if (diff !== 0) return diff;
         return a.name.localeCompare(b.name, "es");
       })
       .slice(0, 10);
-  }, [catalogGames, views]);
+  }, [catalogGames, totalViews]);
 
   const newsGames = useMemo(() => {
     return games

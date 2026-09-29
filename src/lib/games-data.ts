@@ -27,6 +27,15 @@ export type Game = {
   /** true cuando `createdTime` es una fecha real y no el relleno del build. */
   hasDate: boolean;
   /**
+   * Vistas acumuladas del juego, leídas de la columna `views` de su tabla.
+   *
+   * El contador vive en la propia fila del juego en Supabase (no hay una tabla
+   * aparte de vistas), así que cada visita suma con `increment_view` sobre la
+   * fila que coincide con el `Nombre` de la plataforma. Es global: lo ven
+   * todos los usuarios y dispositivos.
+   */
+  views: number;
+  /**
    * `id` numérico tal cual está en Supabase.
    *
    * El `id` es incremental: cada fila nueva que se sube a una tabla tiene un id
@@ -81,12 +90,15 @@ let catalogCache: { data: Catalog; expiresAt: number } | null = null;
 let catalogInFlight: Promise<Catalog> | null = null;
 
 /**
- * Clave con la que se guarda cada vista en la tabla `views`.
+ * Identificador de un juego para el contador de vistas en memoria.
  *
- * Es `NOMBRE_PLATAFORMA` (por ejemplo "Resident Evil 4:PS2"). Se elige el
- * nombre y no el `id` por una razón práctica: el `id` cambia si borras y vuelves
- * a subir un juego, y con él se perdería todo el contador acumulado. El nombre
- * del juego, en cambio, es estable.
+ * El contador real ya no necesita una clave: cada juego trae su `views` de la
+ * columna de su tabla. Esta clave solo sirve para acumular los `+1` optimistas
+ * de la sesión antes de que llegue el siguiente refresco del catálogo.
+ *
+ * Se elige el nombre y no el `id` por una razón práctica: el `id` cambia si
+ * borras y vuelves a subir un juego, y con él se perdería todo el contador
+ * acumulado. El nombre del juego, en cambio, es estable.
  *
  * Se añade la plataforma para separar las distintas versiones del mismo título:
  * "Resident Evil 4" está en PS2, PS3 y PS4, y son entradas distintas del
@@ -131,22 +143,49 @@ export async function getCatalog(): Promise<Catalog> {
  */
 const PAGE_SIZE = 1000;
 
+/**
+ * Quita una columna de una lista `select`.
+ *
+ * Se usa para resilientarse ante columnas que no existen en una tabla concreta:
+ * la tabla BANNER no tiene `created_at` ni `views`, y pedir cualquiera de las
+ * dos hace fallar la consulta entera. Los nombres van entrecomillados en la
+ * lista (`"Texto 1"`), así que se comparan sin las comillas.
+ */
+function dropColumn(columns: string, column: string): string {
+  return columns
+    .split(",")
+    .filter((part) => part.trim().replace(/^"|"$/g, "").toLowerCase() !== column.toLowerCase())
+    .join(", ");
+}
+
+/** "column BANNER.views does not exist" → "views". */
+function missingColumn(message: string): string | null {
+  return message.match(/column\s+\S+\.(\w+)\s+does not exist/i)?.[1] ?? null;
+}
+
 /** Lee una tabla completa paginando, para no perder filas por el tope de 1000. */
 async function fetchAllRows(table: string, columns: string): Promise<Record<string, unknown>[]> {
   const records: Record<string, unknown>[] = [];
+  let selected = columns;
 
   for (let offset = 0; ; offset += PAGE_SIZE) {
     let result = await supabase
       .from(table)
-      .select(columns)
+      .select(selected)
       .range(offset, offset + PAGE_SIZE - 1);
 
-    // Tabla sin columna de fecha: se reintenta sin ella en vez de tirar abajo
-    // el catálogo entero (solo BANNER está en ese caso hoy).
-    if (result.error && /created_at/i.test(result.error.message)) {
+    if (result.error) {
+      const column = missingColumn(result.error.message);
+      if (!column) {
+        console.error(`Supabase request failed [${table}]: ${result.error.message}`);
+        throw new Error(`No se pudo leer la tabla ${table}: ${result.error.message}`);
+      }
+      // La tabla no tiene esa columna: se reintenta sin ella en vez de tirar
+      // abajo el catálogo entero.
+      selected = dropColumn(selected, column);
       result = await supabase
         .from(table)
-        .select(columns.replace(", created_at", ""))
+        .select(selected)
         .range(offset, offset + PAGE_SIZE - 1);
     }
 
@@ -173,13 +212,12 @@ async function loadCatalog(): Promise<Catalog> {
   const rows = await Promise.all(
     TABLES.map(async ({ table }) => {
       const isNews = table === "BANNER";
-      // La tabla BANNER no tiene columna de fecha: pedirla hace fallar la
-      // consulta entera ("column BANNER.created_at does not exist"). Sus filas
-      // se marcan con `hasDate: false` y se ordenan al final. Si le pasa a otra
-      // tabla, se reintenta sin `created_at` en vez de tirar el catálogo entero.
+      // `views` es la columna donde cada plataforma acumula las visitas de sus
+      // juegos. BANNER no la tiene (ni `created_at`): `fetchAllRows` la quita
+      // sola si la tabla responde que no existe.
       const columns = isNews
         ? 'id, "Texto 1", "Texto 2", "Texto 3", url'
-        : "id, Nombre, url, Descripción, Tráiler, created_at";
+        : "id, Nombre, url, Descripción, Tráiler, created_at, views";
 
       const records = await fetchAllRows(table, columns);
 
@@ -204,12 +242,14 @@ async function loadCatalog(): Promise<Catalog> {
       const createdTime = rawCreated ?? new Date().toISOString();
       const trailerUrl = (record["Tráiler"] as string | null)?.trim() ?? null;
       const numericId = Number(record["id"]);
+      const views = Number(record["views"]);
 
       games.push({
         id: String(record["id"]),
         numericId: Number.isFinite(numericId) ? numericId : 0,
         name: name.trim(),
         platform,
+        views: Number.isFinite(views) ? views : 0,
         cover: isNews ? null : ((record["url"] as string | null) ?? null),
         banner: isNews ? ((record["url"] as string | null) ?? null) : null,
         heading: isNews ? ((record["Texto 1"] as string | null)?.trim() ?? null) : null,
@@ -251,43 +291,34 @@ export async function getGameDetails(name: string): Promise<GameDetails> {
   }
 }
 
-/** Ranking global de vistas: { "NOMBRE:PLATAFORMA": count }. */
-export async function getGlobalViews(): Promise<Record<string, number>> {
-  try {
-    const { data, error } = await supabase.from("views").select("game_id, count");
-    if (error) {
-      console.warn("[views] No se pudieron leer las vistas:", error.message);
-      return {};
-    }
-    const views: Record<string, number> = {};
-    for (const row of data ?? []) {
-      views[String(row.game_id)] = Number(row.count) || 0;
-    }
-    return views;
-  } catch (error) {
-    console.warn("[views] Supabase no disponible:", error);
-    return {};
-  }
+/** Tabla de Supabase donde vive un juego (su plataforma y su contador de vistas). */
+function tableForPlatform(platform: string): string | null {
+  return TABLES.find((source) => source.platform === platform)?.table ?? null;
 }
 
 /**
- * Registra una vista (contador global compartido por todos los usuarios).
+ * Registra una vista en la columna `views` del propio juego.
  *
- * Usa la función atómica `increment_view`, que hace el UPDATE ... SET count =
- * count + 1 dentro de la base de datos. Es imprescindible: el upsert anterior
- * escribía `count: 1` siempre, así que con la RPC ausente cada vista BORRABA el
- * contador en vez de sumar (por eso todas las filas tenían count = 1).
+ * El contador NO está en una tabla aparte: cada plataforma tiene su tabla
+ * (`PS2`, `WII`…) con una columna `views`, y lo que se suma es la fila que
+ * coincide con el `Nombre` del juego dentro de la tabla de su plataforma. Por eso
+ * se pasa el nombre y no el `id`: el `id` cambia si borras y vuelves a subir el
+ * juego y con él se perdería todo el contador.
+ *
+ * La suma la hace dentro de la base de datos la función `increment_view`, que
+ * hace `views = views + 1` de forma atómica: si dos usuarios abren el mismo
+ * juego a la vez, las dos visitas se suman en vez de pisarse.
  *
  * Requiere ejecutar supabase-views-setup.sql una vez en Supabase.
  */
-export async function trackGlobalView(viewId: string): Promise<boolean> {
-  const id = String(viewId ?? "")
-    .trim()
-    .slice(0, 300);
-  if (!id) return false;
+export async function trackGlobalView(game: Pick<Game, "name" | "platform">): Promise<boolean> {
+  const table = tableForPlatform(game.platform);
+  const name = game.name.trim().slice(0, 300);
+  // El banner no lleva contador: no está en la configuración de vistas.
+  if (!table || !name) return false;
 
   try {
-    const { error } = await supabase.rpc("increment_view", { p_game_id: id });
+    const { error } = await supabase.rpc("increment_view", { p_tabla: table, p_nombre: name });
     if (error) {
       console.warn(
         "[views] No se pudo incrementar el contador (¿ejecutaste supabase-views-setup.sql?):",

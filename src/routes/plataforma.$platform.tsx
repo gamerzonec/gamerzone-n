@@ -58,17 +58,12 @@ function PlatformPage() {
 
   const openDetail = useCallback((game: Game) => {
     setSelected(game);
-    trackGlobalView(game.id).catch((error) =>
-      console.error("No se pudo registrar la vista", error),
-    );
+    void trackGlobalView(game);
   }, []);
 
   const openCover = useCallback((game: Game) => {
     setLightboxGame(game);
-    // 🔥 Registra la vista al interactuar con la carátula
-    trackGlobalView(game.id).catch((error) =>
-      console.error("No se pudo registrar la vista de carátula", error),
-    );
+    void trackGlobalView(game);
   }, []);
 
   return (
