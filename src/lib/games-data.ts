@@ -44,6 +44,17 @@ export type Game = {
    * numérico se usa 0 y el desempate cae en el nombre.
    */
   numericId: number;
+  /**
+   * Identificador único en todo el catálogo, para usar como `key` de React.
+   *
+   * No vale el `id` a secas: cada tabla de Supabase numera sus filas desde 1,
+   * así que el juego 52 de PS2 y el 52 de SWITCH comparten id. En el buscador
+   * global, que mezcla las 15 tablas, eso producía miles de `key` repetidas
+   * (buscar "a" daba 4446 resultados con 855 ids duplicados) y React reutilizaba
+   * la tarjeta de un juego en otro, dejando carátulas en blanco. Con la
+   * plataforma delante, cada fila del catálogo tiene su propia key.
+   */
+  key: string;
 };
 
 export type Catalog = {
@@ -85,9 +96,44 @@ const TABLES: Array<{ platform: string; table: string }> = [
   { platform: "NOTICIAS", table: "BANNER" },
 ];
 
-const CATALOG_TTL_MS = 5 * 60_000;
+const CATALOG_TTL_MS = 15 * 60_000;
 let catalogCache: { data: Catalog; expiresAt: number } | null = null;
 let catalogInFlight: Promise<Catalog> | null = null;
+
+/**
+ * Catálogo recordado entre recargas de página (`sessionStorage`).
+ *
+ * Cada visita que abría la web tenía que esperar a que llegasen las 15 tablas
+ * (~2-5 s medidos contra el Supabase real) antes de poder pintar el primer
+ * juego. Guardando el resultado en el navegador, la siguiente búsqueda —y
+ * cualquier navegación dentro de la app— arranca con las carátulas ya listas y
+ * el catálogo se refresca por detrás.
+ */
+const CATALOG_STORAGE_KEY = "gamerzone:catalog:v1";
+const CATALOG_STORAGE_MAX_MS = 24 * 60 * 60_000;
+
+function readStoredCatalog(): Catalog | null {
+  if (typeof sessionStorage === "undefined") return null;
+  try {
+    const raw = sessionStorage.getItem(CATALOG_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { savedAt?: number; data?: Catalog };
+    if (!parsed?.savedAt || Date.now() - parsed.savedAt > CATALOG_STORAGE_MAX_MS) return null;
+    if (!parsed.data?.games?.length) return null;
+    return parsed.data;
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredCatalog(data: Catalog): void {
+  if (typeof sessionStorage === "undefined") return;
+  try {
+    sessionStorage.setItem(CATALOG_STORAGE_KEY, JSON.stringify({ savedAt: Date.now(), data }));
+  } catch {
+    // Cuota llena o almacenamiento bloqueado: no es crítico, se trabaja en memoria.
+  }
+}
 
 /**
  * Identificador de un juego para el contador de vistas en memoria.
@@ -109,15 +155,46 @@ export function viewKey(game: Pick<Game, "name" | "platform">): string {
   return `${game.name.trim()}:${game.platform}`;
 }
 
-/** Catálogo completo: plataformas + juegos (con caché en memoria). */
+/**
+ * Texto listo para comparar: minúsculas y sin tildes.
+ *
+ * El buscador comparaba `game.name.toLowerCase().includes(term)`, así que buscar
+ * «pokemon» no encontraba «Pokémon» y «ico» no encontraba «Ico» si el término
+ * llevaba tilde al revés. Se normaliza igual que en el resto de la app (NFD y
+ * fuera los diacríticos) para que coincida siempre.
+ */
+export function normalizeSearchTerm(value: string): string {
+  return String(value ?? "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
+
+/** Catálogo completo: plataformas + juegos (con caché en memoria y en el navegador). */
 export async function getCatalog(): Promise<Catalog> {
   const now = Date.now();
   if (catalogCache && catalogCache.expiresAt > now) return catalogCache.data;
   if (catalogInFlight) return catalogInFlight;
 
+  // Hay una copia guardada de esta sesión: se devuelve al instante para que la
+  // búsqueda no espere a la red, y se refresca en segundo plano. Esperar ~3 s a
+  // las 15 tablas para luego ver casi lo mismo hace que la búsqueda parezca rota.
+  const stored = readStoredCatalog();
+  if (stored) {
+    catalogCache = { data: stored, expiresAt: Date.now() + CATALOG_TTL_MS };
+    void loadCatalog()
+      .then((fresh) => {
+        catalogCache = { data: fresh, expiresAt: Date.now() + CATALOG_TTL_MS };
+        writeStoredCatalog(fresh);
+      })
+      .catch((error) => console.error("No se pudo refrescar el catálogo:", error));
+    return stored;
+  }
+
   catalogInFlight = loadCatalog()
     .then((catalog) => {
       catalogCache = { data: catalog, expiresAt: Date.now() + CATALOG_TTL_MS };
+      writeStoredCatalog(catalog);
       return catalog;
     })
     .catch((error) => {
@@ -232,6 +309,7 @@ async function loadCatalog(): Promise<Catalog> {
       games.push({
         id: String(record["id"]),
         numericId: Number.isFinite(numericId) ? numericId : 0,
+        key: `${platform}:${record["id"]}`,
         name: name.trim(),
         platform,
         views: Number.isFinite(views) ? views : 0,

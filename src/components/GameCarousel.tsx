@@ -31,7 +31,7 @@ export function GameCarousel({
       >
         {games.map((game, index) => (
           <div
-            key={game.id}
+            key={game.key}
             className="w-[calc(50%-0.375rem)] shrink-0 snap-start sm:w-[30%] lg:w-[22%] xl:w-[18%]"
           >
             <GameCard

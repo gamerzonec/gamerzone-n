@@ -65,11 +65,14 @@ export function GameCard({
   const [loaded, setLoaded] = useState(false);
 
   // Efecto extra para asegurar que si el usuario cambia de consola/plataforma,
-  // las tarjetas se reseteen y vuelvan a hacer la animación suave desde cero
+  // las tarjetas se reseteen y vuelvan a hacer la animación suave desde cero.
+  // Se mira `key` y no `id` porque el id se repite entre plataformas y, con
+  // GamesCards reutilizadas, la tarjeta se quedaba con el estado de carga del
+  // juego anterior (carátula en blanco).
   useEffect(() => {
     setVisible(false);
     setLoaded(false);
-  }, [game.id]);
+  }, [game.key]);
 
   useEffect(() => {
     if (visible) return;
@@ -88,8 +91,6 @@ export function GameCard({
           observer.disconnect();
         }
       },
-      // Le dejamos un margen generoso de 300px para que las de arriba se activen
-      // solas inmediatamente al nacer sin necesidad de arrastrar obligatoriamente el dedo
       { rootMargin: "300px 0px" },
     );
     observer.observe(node);
@@ -121,8 +122,8 @@ export function GameCard({
                 onLoad={() => setLoaded(true)}
                 onError={() => setLoaded(true)}
                 onClick={() => onOpenCover(game)}
-                className={`relative h-full w-full cursor-zoom-in object-contain transition-all duration-500 group-hover:scale-105 ${
-                  loaded ? "opacity-100 blur-0" : "opacity-0 blur-md"
+                className={`relative h-full w-full cursor-zoom-in object-contain transition-opacity duration-300 group-hover:scale-105 ${
+                  loaded ? "opacity-100" : "opacity-0"
                 }`}
               />
             )}

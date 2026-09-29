@@ -34,5 +34,8 @@ dist-ssr
 # Local data
 .data/
 
+# Scripts de medición locales (no se publican)
+scripts/
+
 # Netlify build output and cache
 .netlify/

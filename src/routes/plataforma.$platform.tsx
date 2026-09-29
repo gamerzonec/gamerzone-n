@@ -6,7 +6,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { CoverLightbox } from "@/components/CoverLightbox";
 import { GameDetailsModal } from "@/components/GameDetailsModal";
 import { GameGrid } from "@/components/GameGrid";
-import { type Game, trackGlobalView } from "@/lib/games-data";
+import { type Game, normalizeSearchTerm, trackGlobalView } from "@/lib/games-data";
 import { catalogQueryOptions } from "@/lib/games-query";
 import { PLATFORM_LABEL } from "@/lib/platform-art";
 
@@ -49,10 +49,10 @@ function PlatformPage() {
   const label = PLATFORM_LABEL[platform] ?? platform;
 
   const filtered = useMemo(() => {
-    const term = query.trim().toLowerCase();
+    const term = normalizeSearchTerm(query.trim());
     return games
       .filter((game) => game.platform === platform)
-      .filter((game) => (term ? game.name.toLowerCase().includes(term) : true))
+      .filter((game) => (term ? normalizeSearchTerm(game.name).includes(term) : true))
       .sort((a, b) => a.name.localeCompare(b.name, "es"));
   }, [games, platform, query]);
 

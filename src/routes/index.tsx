@@ -8,7 +8,7 @@ import { GameCarousel } from "@/components/GameCarousel";
 import { GameDetailsModal } from "@/components/GameDetailsModal";
 import { GameGrid } from "@/components/GameGrid";
 import { PlatformCard } from "@/components/PlatformCard";
-import { type Game, trackGlobalView, viewKey } from "@/lib/games-data";
+import { type Game, normalizeSearchTerm, trackGlobalView, viewKey } from "@/lib/games-data";
 import { catalogQueryOptions } from "@/lib/games-query";
 import { recentlyAdded } from "@/lib/games";
 
@@ -114,13 +114,19 @@ function CatalogPage() {
       .sort((a, b) => a.createdTime.localeCompare(b.createdTime));
   }, [games]);
 
-  const term = query.trim().toLowerCase();
+  const term = normalizeSearchTerm(query.trim());
   const results = useMemo(() => {
     if (!term) return [];
-    return games
-      .filter((game) => game.name.toLowerCase().includes(term))
+    // El término se normaliza una sola vez (minúsculas y sin tildes) en vez de
+    // recorrer los 5488 nombres llamando a toLowerCase() en cada tecla.
+    //
+    // Se descartan las filas del banner (NOTICIAS): no son juegos, no tienen
+    // `cover` (viven en `banner`) y salían como tarjetas "Sin carátula" que además
+    // dejaban la rejilla sin el color de la plataforma del primer resultado.
+    return catalogGames
+      .filter((game) => normalizeSearchTerm(game.name).includes(term))
       .sort((a, b) => a.name.localeCompare(b.name, "es"));
-  }, [games, term]);
+  }, [catalogGames, term]);
 
   return (
     <main className="min-h-screen pb-20">
@@ -164,7 +170,7 @@ function CatalogPage() {
             {results.length === 0 ? (
               <p className="text-sm text-muted-foreground">No hay resultados para esta búsqueda.</p>
             ) : (
-              <GameGrid games={results} onOpenDetail={openDetail} onOpenCover={openCover} />
+              <ResultadosGrid games={results} onOpenDetail={openDetail} onOpenCover={openCover} />
             )}
           </Section>
         </>
@@ -200,6 +206,32 @@ function Section({ title, children }: { title: string; children: React.ReactNode
       <h2 className="mb-4 text-lg font-bold sm:text-2xl">{title}</h2>
       {children}
     </section>
+  );
+}
+
+/**
+ * Rejilla de la búsqueda general.
+ *
+ * Sin color de plataforma: antes se pintaba con el de la plataforma del primer
+ * resultado, y como ese resultado cambia con cada tecla, toda el área en torno a
+ * las carátulas iba parpadeando de color y se quedaba teñida al terminar la
+ * búsqueda. Ahora las tarjetas usan el esqueleto gris de siempre mientras llega
+ * la imagen. El aviso «Mostrando X de Y títulos» y el botón «Ver los Y
+ * resultados» viven en GameGrid, que es quien carga por lotes.
+ */
+function ResultadosGrid({
+  games,
+  onOpenDetail,
+  onOpenCover,
+}: {
+  games: Game[];
+  onOpenDetail: (game: Game) => void;
+  onOpenCover: (game: Game) => void;
+}) {
+  return (
+    <div className="rounded-lg p-2 sm:p-3">
+      <GameGrid games={games} onOpenDetail={onOpenDetail} onOpenCover={onOpenCover} />
+    </div>
   );
 }
 
