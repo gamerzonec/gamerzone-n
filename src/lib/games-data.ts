@@ -144,62 +144,53 @@ export async function getCatalog(): Promise<Catalog> {
 const PAGE_SIZE = 1000;
 
 /**
- * Quita una columna de una lista `select`.
+ * Lee una tabla completa paginando, para no perder filas por el tope de 1000.
  *
- * Se usa para resilientarse ante columnas que no existen en una tabla concreta:
- * la tabla BANNER no tiene `created_at` ni `views`, y pedir cualquiera de las
- * dos hace fallar la consulta entera. Los nombres van entrecomillados en la
- * lista (`"Texto 1"`), así que se comparan sin las comillas.
+ * Pide `*` en vez de una lista de columnas a propósito. Las tablas no son todas
+ * iguales: BANNER no tiene `views` ni `created_at`, y pedir cualquiera de las
+ * dos hace fallar la consulta entera ("column BANNER.views does not exist"),
+ * que es lo que tumbaba la página entera. Con `*` cada tabla devuelve lo que
+ * tenga y el código decide qué usar. No cuesta más: hoy las columnas de las
+ * tablas de plataformas son exactamente las que ya se pedían.
  */
-function dropColumn(columns: string, column: string): string {
-  return columns
-    .split(",")
-    .filter((part) => part.trim().replace(/^"|"$/g, "").toLowerCase() !== column.toLowerCase())
-    .join(", ");
-}
-
-/** "column BANNER.views does not exist" → "views". */
-function missingColumn(message: string): string | null {
-  return message.match(/column\s+\S+\.(\w+)\s+does not exist/i)?.[1] ?? null;
-}
-
-/** Lee una tabla completa paginando, para no perder filas por el tope de 1000. */
-async function fetchAllRows(table: string, columns: string): Promise<Record<string, unknown>[]> {
+async function fetchAllRows(table: string): Promise<Record<string, unknown>[]> {
   const records: Record<string, unknown>[] = [];
-  let selected = columns;
 
   for (let offset = 0; ; offset += PAGE_SIZE) {
-    let result = await supabase
+    const { data, error } = await supabase
       .from(table)
-      .select(selected)
+      .select("*")
       .range(offset, offset + PAGE_SIZE - 1);
 
-    if (result.error) {
-      const column = missingColumn(result.error.message);
-      if (!column) {
-        console.error(`Supabase request failed [${table}]: ${result.error.message}`);
-        throw new Error(`No se pudo leer la tabla ${table}: ${result.error.message}`);
-      }
-      // La tabla no tiene esa columna: se reintenta sin ella en vez de tirar
-      // abajo el catálogo entero.
-      selected = dropColumn(selected, column);
-      result = await supabase
-        .from(table)
-        .select(selected)
-        .range(offset, offset + PAGE_SIZE - 1);
+    if (error) {
+      console.error(`Supabase request failed [${table}]: ${error.message}`);
+      throw new Error(`No se pudo leer la tabla ${table}: ${error.message}`);
     }
 
-    if (result.error) {
-      console.error(`Supabase request failed [${table}]: ${result.error.message}`);
-      throw new Error(`No se pudo leer la tabla ${table}: ${result.error.message}`);
-    }
-
-    const page = (result.data as unknown as Record<string, unknown>[]) ?? [];
+    const page = (data as unknown as Record<string, unknown>[]) ?? [];
     records.push(...page);
 
     // Página incompleta: ya no queda nada por leer.
     if (page.length < PAGE_SIZE) return records;
   }
+}
+
+/**
+ * URL de la imagen de una fila.
+ *
+ * La columna se llamó `url` y ahora se llama `Cover` (con mayúscula, que en
+ * Postgres obliga a comillas dobles en cualquier consulta). Se aceptan las dos
+ * para que el catálogo no se rompa durante el renombrado ni si se deshace: se
+ * mira primero `Cover` y si no está, `url`. Se comparan también en minúsculas
+ * por si en algún momento se crea como `cover`.
+ */
+function coverUrl(record: Record<string, unknown>): string | null {
+  const candidates = [record["Cover"], record["cover"], record["url"], record["URL"]];
+  for (const candidate of candidates) {
+    const value = typeof candidate === "string" ? candidate.trim() : "";
+    if (value) return value;
+  }
+  return null;
 }
 
 async function loadCatalog(): Promise<Catalog> {
@@ -212,14 +203,7 @@ async function loadCatalog(): Promise<Catalog> {
   const rows = await Promise.all(
     TABLES.map(async ({ table }) => {
       const isNews = table === "BANNER";
-      // `views` es la columna donde cada plataforma acumula las visitas de sus
-      // juegos. BANNER no la tiene (ni `created_at`): `fetchAllRows` la quita
-      // sola si la tabla responde que no existe.
-      const columns = isNews
-        ? 'id, "Texto 1", "Texto 2", "Texto 3", url'
-        : "id, Nombre, url, Descripción, Tráiler, created_at, views";
-
-      const records = await fetchAllRows(table, columns);
+      const records = await fetchAllRows(table);
 
       return { table, isNews, records };
     }),
@@ -243,6 +227,7 @@ async function loadCatalog(): Promise<Catalog> {
       const trailerUrl = (record["Tráiler"] as string | null)?.trim() ?? null;
       const numericId = Number(record["id"]);
       const views = Number(record["views"]);
+      const image = coverUrl(record);
 
       games.push({
         id: String(record["id"]),
@@ -250,8 +235,8 @@ async function loadCatalog(): Promise<Catalog> {
         name: name.trim(),
         platform,
         views: Number.isFinite(views) ? views : 0,
-        cover: isNews ? null : ((record["url"] as string | null) ?? null),
-        banner: isNews ? ((record["url"] as string | null) ?? null) : null,
+        cover: isNews ? null : image,
+        banner: isNews ? image : null,
         heading: isNews ? ((record["Texto 1"] as string | null)?.trim() ?? null) : null,
         description: isNews
           ? ((record["Texto 3"] as string | null)?.trim() ?? null)
