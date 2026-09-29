@@ -108,11 +108,12 @@ function CatalogPage() {
       .slice(0, 10);
   }, [catalogGames, totalViews]);
 
-  const newsGames = useMemo(() => {
-    return games
-      .filter((game) => game.platform === "NOTICIAS")
-      .sort((a, b) => a.createdTime.localeCompare(b.createdTime));
-  }, [games]);
+  // El banner rota por `id` ascendente, que es el orden de prioridad que se
+  // controla desde la tabla BANNER de Supabase (id 1 = el aviso más importante).
+  // Aquí no se reordena nada: el catálogo ya los deja en ese orden, y la tabla
+  // BANNER no tiene `created_at`, así que ordenar por fecha o por nombre no
+  // significaba nada.
+  const newsGames = useMemo(() => games.filter((game) => game.platform === "NOTICIAS"), [games]);
 
   const term = normalizeSearchTerm(query.trim());
   const results = useMemo(() => {

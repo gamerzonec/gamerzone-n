@@ -234,10 +234,19 @@ async function fetchAllRows(table: string): Promise<Record<string, unknown>[]> {
   const records: Record<string, unknown>[] = [];
 
   for (let offset = 0; ; offset += PAGE_SIZE) {
-    const { data, error } = await supabase
-      .from(table)
-      .select("*")
-      .range(offset, offset + PAGE_SIZE - 1);
+    const base = supabase.from(table).select("*");
+
+    // Orden SOLO para el banner. Su rotación tiene que seguir siempre el mismo
+    // orden de prioridad (id 1 = el aviso más importante, el último id = el menos
+    // importante), y el orden en que Postgres devuelve las filas sin `order` no
+    // es estable: cambia al editar una fila o con un `vacuum`, y se ha visto
+    // devolver `1,3,2` y luego `2,1,3`.
+    //
+    // El resto de tablas NO se ordenan aquí: la app ya las ordena por plataforma y
+    // por nombre, así que el orden de lectura no se ve en ninguna parte.
+    const { data, error } = await (
+      table === "BANNER" ? base.order("id", { ascending: true }) : base
+    ).range(offset, offset + PAGE_SIZE - 1);
 
     if (error) {
       console.error(`Supabase request failed [${table}]: ${error.message}`);
@@ -329,11 +338,19 @@ async function loadCatalog(): Promise<Catalog> {
     }
   }
 
-  games.sort(
-    (a, b) =>
+  // Los juegos se agrupan por plataforma y dentro de cada una van por nombre.
+  // El banner es la excepción: se deja el orden de lectura de la tabla BANNER
+  // (por `id`, ver `fetchAllRows`), que es el orden de prioridad de los avisos.
+  // `sort` es estable, así que devolver 0 conserva ese orden.
+  games.sort((a, b) => {
+    if (a.platform === "NOTICIAS" || b.platform === "NOTICIAS") {
+      if (a.platform === b.platform) return 0;
+    }
+    return (
       platforms.indexOf(a.platform) - platforms.indexOf(b.platform) ||
-      a.name.localeCompare(b.name, "es"),
-  );
+      a.name.localeCompare(b.name, "es")
+    );
+  });
 
   return { platforms, games };
 }
