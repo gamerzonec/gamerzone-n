@@ -1,4 +1,4 @@
-import { useSuspenseQuery } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import { ArrowLeft, Gamepad2, Search } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -7,10 +7,12 @@ import { CoverLightbox } from "@/components/CoverLightbox";
 import { GameCarousel } from "@/components/GameCarousel";
 import { GameDetailsModal } from "@/components/GameDetailsModal";
 import { GameGrid } from "@/components/GameGrid";
+import { BannerSkeleton, CarouselSkeleton, GameCardSkeleton } from "@/components/LoadingSkeleton";
 import { PlatformCard } from "@/components/PlatformCard";
 import { type Game, normalizeSearchTerm, trackGlobalView, viewKey } from "@/lib/games-data";
 import { catalogQueryOptions } from "@/lib/games-query";
 import { recentlyAdded } from "@/lib/games";
+import { PLATFORM_LABEL } from "@/lib/platform-art";
 
 export const Route = createFileRoute("/")({
   loader: ({ context }) => {
@@ -45,9 +47,33 @@ export const Route = createFileRoute("/")({
   component: CatalogPage,
 });
 
+/**
+ * Lista vacía estable.
+ *
+ * Se usa mientras el catálogo carga. Tiene que ser la MISMA referencia en cada
+ * render: si se creara un array nuevo, los `useMemo` que dependen de `games` se
+ * recalcularían en cada tecla y con ellos todo el renderizado.
+ */
+const NO_GAMES: Game[] = [];
+
+/**
+ * Plataformas de la web, sin depender del catálogo.
+ *
+ * Las tarjetas de plataforma son las imágenes de `platform-art.ts`, que ya están
+ * en el paquete: no necesitan ningún dato de Supabase, así que se pintan de
+ * inmediato aunque el catálogo aún esté en camino.
+ */
+const PLATFORMS = Object.keys(PLATFORM_LABEL);
+
 function CatalogPage() {
-  const { data: catalog } = useSuspenseQuery(catalogQueryOptions);
-  const games = catalog.games;
+  // `useQuery` y no `useSuspenseQuery`: la página no espera al catálogo para
+  // pintarse. Con `suspense` la pantalla se quedaba en blanco hasta que llegaban
+  // las 5.500 filas desde Supabase, que en conexiones lentas son varios segundos.
+  // Ahora sale la estructura al instante y solo el banner y los carruseles
+  // muestran su esqueleto hasta que hay datos.
+  const { data: catalog, isError, error } = useQuery(catalogQueryOptions);
+  const loading = !catalog && !isError;
+  const games = catalog?.games ?? NO_GAMES;
   const [selected, setSelected] = useState<Game | null>(null);
   const [lightboxGame, setLightboxGame] = useState<Game | null>(null);
   const [query, setQuery] = useState("");
@@ -150,7 +176,7 @@ function CatalogPage() {
         </header>
       )}
 
-      {!term && <NewsBanner newsGames={newsGames} />}
+      {loading ? <BannerSkeleton /> : <NewsBanner newsGames={newsGames} />}
       {term && (
         <div className="mx-auto max-w-7xl px-4 pt-6 sm:px-6">
           <button
@@ -163,12 +189,28 @@ function CatalogPage() {
           </button>
         </div>
       )}
-      <SearchBar query={query} totalGames={games.length} onQueryChange={setQuery} />
+      <SearchBar
+        query={query}
+        totalGames={catalog ? catalog.games.length : null}
+        onQueryChange={setQuery}
+      />
 
-      {term ? (
+      {isError ? (
+        <Section title="No pudimos cargar el catálogo">
+          <p className="text-sm text-muted-foreground">
+            {error?.message ?? "Inténtalo de nuevo en un momento."}
+          </p>
+        </Section>
+      ) : term ? (
         <>
           <Section title={`Resultados para “${query.trim()}”`}>
-            {results.length === 0 ? (
+            {loading ? (
+              <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4 xl:grid-cols-5">
+                {Array.from({ length: 10 }, (_, index) => (
+                  <GameCardSkeleton key={index} />
+                ))}
+              </div>
+            ) : results.length === 0 ? (
               <p className="text-sm text-muted-foreground">No hay resultados para esta búsqueda.</p>
             ) : (
               <ResultadosGrid games={results} onOpenDetail={openDetail} onOpenCover={openCover} />
@@ -178,16 +220,24 @@ function CatalogPage() {
       ) : (
         <>
           <Section title="Recién añadidos">
-            <GameCarousel games={recent} onOpenDetail={openDetail} onOpenCover={openCover} />
+            {loading ? (
+              <CarouselSkeleton />
+            ) : (
+              <GameCarousel games={recent} onOpenDetail={openDetail} onOpenCover={openCover} />
+            )}
           </Section>
 
           <Section title="Más vistos">
-            <GameCarousel games={popular} onOpenDetail={openDetail} onOpenCover={openCover} />
+            {loading ? (
+              <CarouselSkeleton />
+            ) : (
+              <GameCarousel games={popular} onOpenDetail={openDetail} onOpenCover={openCover} />
+            )}
           </Section>
 
           <Section title="Plataformas">
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 sm:gap-4 lg:grid-cols-5">
-              {catalog.platforms.map((item) => (
+              {(catalog?.platforms ?? PLATFORMS).map((item) => (
                 <PlatformCard key={item} platform={item} />
               ))}
             </div>
@@ -242,7 +292,8 @@ function SearchBar({
   onQueryChange,
 }: {
   query: string;
-  totalGames: number;
+  /** `null` mientras el catálogo carga, para no escribir "0 títulos" mientras tanto. */
+  totalGames: number | null;
   onQueryChange: (query: string) => void;
 }) {
   return (
@@ -259,8 +310,10 @@ function SearchBar({
           <Search className="pointer-events-none absolute right-3 top-2.5 h-5 w-5 text-muted-foreground" />
         </label>
       </div>
-      <p className="mt-2 text-sm text-muted-foreground">
-        {totalGames} títulos sincronizados en tiempo real.
+      <p className="mt-2 min-h-5 text-sm text-muted-foreground">
+        {totalGames === null
+          ? "Sincronizando el catálogo…"
+          : `${totalGames} títulos sincronizados en tiempo real.`}
       </p>
     </section>
   );

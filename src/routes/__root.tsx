@@ -10,6 +10,7 @@ import {
 import { useEffect, type ReactNode } from "react";
 
 import appCss from "../styles.css?url";
+import { SUPABASE_API_ORIGIN, SUPABASE_STORAGE_ORIGIN } from "../lib/games-data";
 import { reportLovableError } from "../lib/lovable-error-reporting";
 
 function NotFoundComponent() {
@@ -90,12 +91,28 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
         rel: "stylesheet",
         href: appCss,
       },
-      { rel: "preconnect", href: "https://fonts.googleapis.com" },
-      { rel: "preconnect", href: "https://fonts.gstatic.com", crossOrigin: "anonymous" },
+      // Las fuentes se precargan desde el propio sitio (ver `styles.css`). Antes
+      // venían de Google Fonts con un <link> que bloqueaba el pintado: en
+      // conexiones lentas la página se quedaba en blanco esperando ese fichero.
       {
-        rel: "stylesheet",
-        href: "https://fonts.googleapis.com/css2?family=Outfit:wght@600;700;800&family=Inter:wght@400;500;600&display=swap",
+        rel: "preload",
+        href: "/fonts/Inter-var.woff2",
+        as: "font",
+        type: "font/woff2",
+        crossOrigin: "anonymous",
       },
+      {
+        rel: "preload",
+        href: "/fonts/Outfit-var.woff2",
+        as: "font",
+        type: "font/woff2",
+        crossOrigin: "anonymous",
+      },
+      // El catálogo y las carátulas vienen de dos dominios de Supabase. Abrir la
+      // conexión antes de tiempo (DNS + TLS) ahorra de uno a dos viajes de ida y
+      // vuelta, que en una conexión lenta se notan.
+      { rel: "preconnect", href: SUPABASE_API_ORIGIN },
+      { rel: "preconnect", href: SUPABASE_STORAGE_ORIGIN, crossOrigin: "anonymous" },
       { rel: "icon", href: "/favicon.ico", type: "image/x-icon" },
     ],
   }),

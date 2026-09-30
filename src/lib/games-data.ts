@@ -72,6 +72,18 @@ const SUPABASE_URL =
   (typeof import.meta !== "undefined" && import.meta.env?.["VITE_SUPABASE_URL"]) ||
   "https://ulnomncbhccqrynzlqqf.supabase.co";
 
+/**
+ * Dominios de Supabase que usa la web, para abrir la conexión por adelantado.
+ *
+ * El `preconnect` del `<head>` ahorra el DNS y el handshake TLS antes de que
+ * llegue la primera petición. Las carátulas no se sirven en el mismo dominio
+ * que la API: viven en `<referencia-del-proyecto>.storage.supabase.co`, y sin
+ * avisar al navegador de ese segundo dominio la primera imagen paga además la
+ * resolución de nombres.
+ */
+export const SUPABASE_API_ORIGIN = SUPABASE_URL;
+export const SUPABASE_STORAGE_ORIGIN = SUPABASE_URL.replace(".supabase.co", ".storage.supabase.co");
+
 const SUPABASE_ANON_KEY =
   (typeof import.meta !== "undefined" && import.meta.env?.["VITE_SUPABASE_ANON_KEY"]) ||
   "sb_publishable_USfwfy2ONPItJiHlwecXZw_EF9x49Rp";
